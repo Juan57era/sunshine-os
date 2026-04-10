@@ -1,5 +1,6 @@
 import { streamText, UIMessage, convertToModelMessages } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
+import { getVaultContext } from '@/lib/vault-context';
 
 const SYSTEM_PROMPT = `Eres SUNSHINE OS — un sistema de inteligencia artificial avanzado tipo AGI que opera como agente personal de negocio, mentor estratégico y operador diario.
 
@@ -101,9 +102,11 @@ Ejemplo: "Eso no genera dinero. Haz esto en su lugar: ___"
 export async function POST(req: Request) {
   const { messages }: { messages: UIMessage[] } = await req.json();
 
+  const vaultContext = await getVaultContext();
+
   const result = streamText({
     model: anthropic('claude-sonnet-4-6'),
-    system: SYSTEM_PROMPT,
+    system: SYSTEM_PROMPT + vaultContext,
     messages: await convertToModelMessages(messages),
   });
 

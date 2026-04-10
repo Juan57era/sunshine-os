@@ -8,7 +8,6 @@ import ImageUpload from '@/components/ImageUpload';
 import { addVoiceEntry, getVoiceLog, getRecentVoiceContext, type VoiceEntry } from '@/lib/voice-log';
 import { createSpeechController } from '@/lib/speech';
 import { getBaseUrl, getConnectionStatus } from '@/lib/smart-router';
-import PinLock from '@/components/PinLock';
 
 type SunshineState = 'idle' | 'listening' | 'thinking' | 'speaking';
 
@@ -21,7 +20,6 @@ function haptic(style: 'light' | 'medium' | 'heavy' = 'light') {
 }
 
 export default function SunshineOS() {
-  const [authed, setAuthed] = useState(false);
   const [input, setInput] = useState('');
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -252,11 +250,19 @@ export default function SunshineOS() {
     }
   };
 
-  // PIN only on mobile
-  const isMobile = typeof window !== 'undefined' && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-  if (!authed && isMobile) {
-    return <PinLock onUnlock={() => setAuthed(true)} />;
-  }
+  // Auto-briefing on first load
+  const briefingSentRef = useRef(false);
+  useEffect(() => {
+    if (briefingSentRef.current || messages.length > 0) return;
+    briefingSentRef.current = true;
+    // Small delay to let everything initialize
+    const timer = setTimeout(() => {
+      const hour = new Date().getHours();
+      const greeting = hour < 12 ? 'Buenos dias' : hour < 18 ? 'Buenas tardes' : 'Buenas noches';
+      rawSendMessage({ text: greeting });
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [messages.length, rawSendMessage]);
 
   return (
     <div className="h-screen w-screen flex flex-col relative grid-bg overflow-hidden">

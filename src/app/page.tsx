@@ -191,7 +191,9 @@ export default function SunshineOS() {
     }
   };
 
-  if (!authed) {
+  // PIN only on mobile
+  const isMobile = typeof window !== 'undefined' && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+  if (!authed && isMobile) {
     return <PinLock onUnlock={() => setAuthed(true)} />;
   }
 

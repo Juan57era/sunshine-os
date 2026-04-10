@@ -6,7 +6,7 @@ interface PinLockProps {
   onUnlock: () => void;
 }
 
-const PIN = '5757'; // Juan's pin
+const PIN = '6955';
 
 export default function PinLock({ onUnlock }: PinLockProps) {
   const [digits, setDigits] = useState<string[]>(['', '', '', '']);

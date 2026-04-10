@@ -1,8 +1,10 @@
 'use client';
 
 import { useChat } from '@ai-sdk/react';
+import { DefaultChatTransport } from 'ai';
 import { useState, useRef, useEffect, useCallback } from 'react';
 import Vortex from '@/components/Vortex';
+import { addVoiceEntry, getVoiceLog, getRecentVoiceContext, type VoiceEntry } from '@/lib/voice-log';
 
 type SunshineState = 'idle' | 'listening' | 'thinking' | 'speaking';
 
@@ -12,14 +14,33 @@ export default function SunshineOS() {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [showChat, setShowChat] = useState(false);
+  const [showLog, setShowLog] = useState(false);
+  const [voiceLogEntries, setVoiceLogEntries] = useState<VoiceEntry[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const transcriptRef = useRef('');
 
-  const { messages, sendMessage, status } = useChat();
+  const { messages, sendMessage: rawSendMessage, status } = useChat({
+    transport: new DefaultChatTransport({
+      api: '/api/chat',
+      body: { voiceContext: typeof window !== 'undefined' ? getRecentVoiceContext() : '' },
+    }),
+  });
   const isStreaming = status === 'streaming';
+
+  // Wrap sendMessage to log entries
+  const sendWithLog = useCallback((text: string, source: 'voice' | 'text') => {
+    addVoiceEntry(text, source);
+    setVoiceLogEntries(getVoiceLog());
+    rawSendMessage({ text });
+  }, [rawSendMessage]);
+
+  // Load voice log on mount
+  useEffect(() => {
+    setVoiceLogEntries(getVoiceLog());
+  }, []);
 
   // Derive SUNSHINE state
   const sunshineState: SunshineState = isListening
@@ -77,7 +98,7 @@ export default function SunshineOS() {
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
       // Send whatever we have
       if (transcriptRef.current.trim()) {
-        sendMessage({ text: transcriptRef.current.trim() });
+        sendWithLog(transcriptRef.current.trim(), 'voice');
         transcriptRef.current = '';
       }
       setIsListening(false);
@@ -110,7 +131,7 @@ export default function SunshineOS() {
       silenceTimerRef.current = setTimeout(() => {
         recognition.stop();
         if (transcriptRef.current.trim()) {
-          sendMessage({ text: transcriptRef.current.trim() });
+          sendWithLog(transcriptRef.current.trim(), 'voice');
           transcriptRef.current = '';
           setInput('');
         }
@@ -131,12 +152,12 @@ export default function SunshineOS() {
     recognitionRef.current = recognition;
     recognition.start();
     setIsListening(true);
-  }, [isListening, sendMessage]);
+  }, [isListening, sendWithLog]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || isStreaming) return;
-    sendMessage({ text: input });
+    sendWithLog(input, 'text');
     setInput('');
   };
 
@@ -192,11 +213,63 @@ export default function SunshineOS() {
           >
             {voiceEnabled ? 'VOZ' : 'MUTE'}
           </button>
+          <button
+            onClick={() => { setShowLog(!showLog); setVoiceLogEntries(getVoiceLog()); }}
+            className="glass rounded-full px-3 py-1 text-[10px] tracking-widest text-slate-400 hover:text-cyan-400 transition-all"
+          >
+            LOG
+          </button>
           <span className={`text-[10px] tracking-widest font-medium status-glow ${getStatusColor()}`}>
             {getStatusLabel()}
           </span>
         </div>
       </header>
+
+      {/* Voice Log Panel */}
+      {showLog && (
+        <div className="absolute inset-0 z-40 flex items-center justify-center p-4">
+          <div className="glass-strong rounded-2xl w-full max-w-lg max-h-[80vh] flex flex-col overflow-hidden">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
+              <span className="text-sm font-medium sunshine-gradient tracking-wider">VOICE LOG</span>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => sendWithLog('Analiza mi voice log. Revisa mis patrones de habla, muletillas, estructura de frases, claridad, y dame feedback concreto para mejorar mi pitch y comunicacion profesional. Se especifica con ejemplos de lo que dije mal y como deberia decirlo.', 'text')}
+                  className="glass rounded-full px-3 py-1 text-[10px] tracking-widest text-amber-400 hover:text-amber-300 transition-all"
+                >
+                  ANALIZAR
+                </button>
+                <button
+                  onClick={() => setShowLog(false)}
+                  className="text-slate-500 hover:text-slate-300 text-lg"
+                >
+                  x
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 space-y-2">
+              {voiceLogEntries.length === 0 ? (
+                <p className="text-slate-600 text-xs text-center py-8">No hay entradas de voz todavia</p>
+              ) : (
+                [...voiceLogEntries].reverse().map((entry) => (
+                  <div key={entry.id} className="glass rounded-lg px-3 py-2">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className={`text-[9px] tracking-wider ${entry.source === 'voice' ? 'text-red-400' : 'text-cyan-400'}`}>
+                        {entry.source === 'voice' ? 'MIC' : 'TXT'}
+                      </span>
+                      <span className="text-[9px] text-slate-600">
+                        {new Date(entry.timestamp).toLocaleString('es-PR', {
+                          month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+                        })}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-300">{entry.transcript}</p>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Center content */}
       <div className="flex-1 flex flex-col items-center justify-center relative z-10">
@@ -217,7 +290,7 @@ export default function SunshineOS() {
               ].map((prompt) => (
                 <button
                   key={prompt}
-                  onClick={() => sendMessage({ text: prompt })}
+                  onClick={() => sendWithLog(prompt, 'text')}
                   className="glass rounded-full px-4 py-2 text-[11px] text-slate-400 hover:text-cyan-400 hover:border-cyan-900 transition-all"
                 >
                   {prompt}

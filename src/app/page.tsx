@@ -11,11 +11,9 @@ import { getBaseUrl, getConnectionStatus } from '@/lib/smart-router';
 
 type SunshineState = 'idle' | 'listening' | 'thinking' | 'speaking';
 
-// Haptic feedback
 function haptic(style: 'light' | 'medium' | 'heavy' = 'light') {
   if (typeof navigator !== 'undefined' && navigator.vibrate) {
-    const ms = style === 'light' ? 10 : style === 'medium' ? 25 : 50;
-    navigator.vibrate(ms);
+    navigator.vibrate(style === 'light' ? 10 : style === 'medium' ? 25 : 50);
   }
 }
 
@@ -24,12 +22,12 @@ export default function SunshineOS() {
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [voiceEnabled, setVoiceEnabled] = useState(true);
-  const [showChat, setShowChat] = useState(false);
   const [showLog, setShowLog] = useState(false);
   const [voiceLogEntries, setVoiceLogEntries] = useState<VoiceEntry[]>([]);
   const [connection, setConnection] = useState<'local' | 'tunnel' | 'cloud'>('cloud');
   const [imageData, setImageData] = useState<{ base64: string; mimeType: string } | null>(null);
   const [imagePreview, setImagePreview] = useState<string | undefined>();
+  const [briefingDone, setBriefingDone] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -49,14 +47,13 @@ export default function SunshineOS() {
   });
   const isStreaming = status === 'streaming';
 
-  // Send with logging, image support, and haptic
+  // Send with logging + image support + haptic
   const sendWithLog = useCallback((text: string, source: 'voice' | 'text') => {
     addVoiceEntry(text, source);
     setVoiceLogEntries(getVoiceLog());
     haptic('medium');
 
     if (imageData) {
-      // Convert base64 to File object for sendMessage
       const byteChars = atob(imageData.base64);
       const byteArray = new Uint8Array(byteChars.length);
       for (let i = 0; i < byteChars.length; i++) byteArray[i] = byteChars.charCodeAt(i);
@@ -72,9 +69,7 @@ export default function SunshineOS() {
   }, [rawSendMessage, imageData]);
 
   // Load voice log on mount
-  useEffect(() => {
-    setVoiceLogEntries(getVoiceLog());
-  }, []);
+  useEffect(() => { setVoiceLogEntries(getVoiceLog()); }, []);
 
   // Derive SUNSHINE state
   const sunshineState: SunshineState = isListening
@@ -85,11 +80,6 @@ export default function SunshineOS() {
         ? 'speaking'
         : 'idle';
 
-  // Show chat when first message arrives
-  useEffect(() => {
-    if (messages.length > 0 && !showChat) setShowChat(true);
-  }, [messages, showChat]);
-
   // Auto-scroll
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -97,9 +87,7 @@ export default function SunshineOS() {
 
   // Speech controller
   const speechRef = useRef<ReturnType<typeof createSpeechController> | null>(null);
-  useEffect(() => {
-    speechRef.current = createSpeechController();
-  }, []);
+  useEffect(() => { speechRef.current = createSpeechController(); }, []);
 
   const speak = useCallback((text: string) => {
     if (!voiceEnabled || !speechRef.current) return;
@@ -111,7 +99,7 @@ export default function SunshineOS() {
     );
   }, [voiceEnabled]);
 
-  // Auto-speak new responses
+  // Auto-speak new assistant responses
   const lastMsgRef = useRef('');
   useEffect(() => {
     if (isStreaming || messages.length === 0) return;
@@ -124,13 +112,27 @@ export default function SunshineOS() {
     if (text && text !== lastMsgRef.current) {
       lastMsgRef.current = text;
       speak(text);
+      // Mark briefing as done after first assistant response
+      if (!briefingDone) setBriefingDone(true);
     }
-  }, [messages, isStreaming, speak]);
+  }, [messages, isStreaming, speak, briefingDone]);
+
+  // Auto-briefing on first load
+  const briefingSentRef = useRef(false);
+  useEffect(() => {
+    if (briefingSentRef.current || messages.length > 0) return;
+    briefingSentRef.current = true;
+    const timer = setTimeout(() => {
+      const hour = new Date().getHours();
+      const greeting = hour < 12 ? 'Buenos dias' : hour < 18 ? 'Buenas tardes' : 'Buenas noches';
+      rawSendMessage({ text: greeting });
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [messages.length, rawSendMessage]);
 
   // Voice input with 10-second silence buffer
   const toggleListening = useCallback(() => {
     haptic('heavy');
-
     if (isListening) {
       recognitionRef.current?.stop();
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
@@ -141,6 +143,10 @@ export default function SunshineOS() {
       setIsListening(false);
       return;
     }
+
+    // Stop SUNSHINE from speaking when user starts talking
+    speechRef.current?.stop();
+    setIsSpeaking(false);
 
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) return;
@@ -187,50 +193,25 @@ export default function SunshineOS() {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || isStreaming) return;
+    speechRef.current?.stop();
+    setIsSpeaking(false);
     sendWithLog(input, 'text');
     setInput('');
   };
 
-  // Image handling
-  const handleImageSelected = (base64: string, mimeType: string) => {
-    setImageData({ base64, mimeType });
-    setImagePreview(`data:${mimeType};base64,${base64}`);
-    haptic('light');
-  };
-
-  const handleImageClear = () => {
-    setImageData(null);
-    setImagePreview(undefined);
-  };
-
-  // Save session to vault
   const saveSession = useCallback(async () => {
     if (messages.length < 2) return;
     const text = messages
       .filter(m => m.role === 'assistant')
       .flatMap(m => m.parts.filter((p): p is { type: 'text'; text: string } => p.type === 'text'))
-      .map(p => p.text)
-      .join('\n');
-
+      .map(p => p.text).join('\n');
     await fetch('/api/vault/session', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        summary: text.slice(0, 500),
-        decisions: [],
-        tasks: [],
-        projects: ['sunshine-os'],
-      }),
+      body: JSON.stringify({ summary: text.slice(0, 500), decisions: [], tasks: [], projects: ['sunshine-os'] }),
     });
     haptic('medium');
   }, [messages]);
-
-  const getGreeting = () => {
-    const hour = new Date().getHours();
-    if (hour < 12) return 'Buenos dias';
-    if (hour < 18) return 'Buenas tardes';
-    return 'Buenas noches';
-  };
 
   const getStatusLabel = () => {
     switch (sunshineState) {
@@ -250,61 +231,52 @@ export default function SunshineOS() {
     }
   };
 
-  // Auto-briefing on first load
-  const briefingSentRef = useRef(false);
-  useEffect(() => {
-    if (briefingSentRef.current || messages.length > 0) return;
-    briefingSentRef.current = true;
-    // Small delay to let everything initialize
-    const timer = setTimeout(() => {
-      const hour = new Date().getHours();
-      const greeting = hour < 12 ? 'Buenos dias' : hour < 18 ? 'Buenas tardes' : 'Buenas noches';
-      rawSendMessage({ text: greeting });
-    }, 1000);
-    return () => clearTimeout(timer);
-  }, [messages.length, rawSendMessage]);
+  // Filter messages: hide the auto-briefing exchange (first user greeting + first assistant briefing)
+  const visibleMessages = briefingDone
+    ? messages.filter((_, i) => i > 1) // skip greeting + briefing
+    : [];
+
+  const hasUserMessages = visibleMessages.length > 0;
 
   return (
     <div className="h-screen w-screen flex flex-col relative grid-bg overflow-hidden">
-      {/* Vortex background */}
+      {/* Vortex */}
       <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-        <div className={`transition-all duration-1000 ${showChat ? 'w-[200px] h-[200px] -translate-y-[35vh]' : 'w-[320px] h-[320px] sm:w-[400px] sm:h-[400px]'}`}>
+        <div className={`transition-all duration-1000 ${hasUserMessages ? 'w-[180px] h-[180px] -translate-y-[36vh]' : 'w-[300px] h-[300px] sm:w-[400px] sm:h-[400px]'}`}>
           <Vortex state={sunshineState} />
         </div>
       </div>
 
-      {/* Top bar */}
-      <header className="relative z-10 flex items-center justify-between px-5 py-3">
+      {/* Header */}
+      <header className="relative z-10 flex items-center justify-between px-4 py-3">
         <div className="flex items-center gap-2">
-          <span className="text-lg font-bold sunshine-gradient tracking-[0.2em]">SUNSHINE</span>
-          <span className={`text-[8px] tracking-wider px-2 py-0.5 rounded-full glass ${
-            connection === 'local' ? 'text-emerald-400' :
-            connection === 'tunnel' ? 'text-cyan-400' : 'text-amber-400'
+          <span className="text-base font-bold sunshine-gradient tracking-[0.2em]">SUNSHINE</span>
+          <span className={`text-[7px] tracking-wider px-1.5 py-0.5 rounded-full glass ${
+            connection === 'local' ? 'text-emerald-400' : connection === 'tunnel' ? 'text-cyan-400' : 'text-amber-400'
           }`}>
             {connection === 'local' ? 'LOCAL' : connection === 'tunnel' ? 'DIRECT' : 'CLOUD'}
           </span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           <button
             onClick={() => { speechRef.current?.stop(); setIsSpeaking(false); setVoiceEnabled(!voiceEnabled); }}
-            className={`glass rounded-full px-3 py-1 text-[10px] tracking-widest transition-all ${voiceEnabled ? 'text-cyan-400' : 'text-slate-600'}`}
+            className={`glass rounded-full px-2 py-1 text-[9px] tracking-widest transition-all ${voiceEnabled ? 'text-cyan-400' : 'text-slate-600'}`}
           >
             {voiceEnabled ? 'VOZ' : 'MUTE'}
           </button>
           <button
             onClick={() => { setShowLog(!showLog); setVoiceLogEntries(getVoiceLog()); }}
-            className="glass rounded-full px-3 py-1 text-[10px] tracking-widest text-slate-400 hover:text-cyan-400 transition-all"
+            className="glass rounded-full px-2 py-1 text-[9px] tracking-widest text-slate-400 hover:text-cyan-400 transition-all"
           >
             LOG
           </button>
           <button
             onClick={saveSession}
-            className="glass rounded-full px-3 py-1 text-[10px] tracking-widest text-slate-400 hover:text-amber-400 transition-all"
-            title="Guardar sesion en Obsidian"
+            className="glass rounded-full px-2 py-1 text-[9px] tracking-widest text-slate-400 hover:text-amber-400 transition-all"
           >
             SAVE
           </button>
-          <span className={`text-[10px] tracking-widest font-medium status-glow ${getStatusColor()}`}>
+          <span className={`text-[9px] tracking-widest font-medium status-glow ${getStatusColor()}`}>
             {getStatusLabel()}
           </span>
         </div>
@@ -312,18 +284,18 @@ export default function SunshineOS() {
 
       {/* Voice Log Panel */}
       {showLog && (
-        <div className="absolute inset-0 z-40 flex items-center justify-center p-4">
-          <div className="glass-strong rounded-2xl w-full max-w-lg max-h-[80vh] flex flex-col overflow-hidden">
+        <div className="absolute inset-0 z-40 flex items-center justify-center p-4" onClick={() => setShowLog(false)}>
+          <div className="glass-strong rounded-2xl w-full max-w-lg max-h-[80vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
               <span className="text-sm font-medium sunshine-gradient tracking-wider">VOICE LOG</span>
               <div className="flex gap-2">
                 <button
-                  onClick={() => { sendWithLog('Analiza mi voice log completo. Revisa patrones de habla, muletillas, estructura, claridad, y dame feedback concreto para mejorar mi pitch. Ejemplos especificos.', 'text'); setShowLog(false); }}
-                  className="glass rounded-full px-3 py-1 text-[10px] tracking-widest text-amber-400 hover:text-amber-300 transition-all"
+                  onClick={() => { sendWithLog('Analiza mi voice log completo. Patrones de habla, muletillas, estructura, claridad. Feedback concreto con ejemplos.', 'text'); setShowLog(false); }}
+                  className="glass rounded-full px-3 py-1 text-[10px] tracking-widest text-amber-400"
                 >
                   ANALIZAR
                 </button>
-                <button onClick={() => setShowLog(false)} className="text-slate-500 hover:text-slate-300 text-lg">x</button>
+                <button onClick={() => setShowLog(false)} className="text-slate-500 hover:text-slate-300 px-1">x</button>
               </div>
             </div>
             <div className="flex-1 overflow-y-auto p-4 space-y-2">
@@ -349,32 +321,39 @@ export default function SunshineOS() {
         </div>
       )}
 
-      {/* Center content */}
+      {/* Center */}
       <div className="flex-1 flex flex-col items-center justify-center relative z-10">
-        {!showChat && (
-          <div className="flex flex-col items-center text-center mt-20 space-y-3">
-            <p className="text-slate-500 text-xs tracking-[0.3em] uppercase">{getGreeting()}</p>
-            <p className="text-slate-400 text-sm max-w-xs">
-              Soy SUNSHINE, tu operadora de inteligencia.<br />
-              Habla o escribe.
-            </p>
-            <div className="flex flex-wrap justify-center gap-2 mt-6 max-w-sm">
-              {['Plan de hoy', 'Estado de negocios', 'Necesito leads', 'Analiza mi semana'].map((prompt) => (
-                <button
-                  key={prompt}
-                  onClick={() => sendWithLog(prompt, 'text')}
-                  className="glass rounded-full px-4 py-2 text-[11px] text-slate-400 hover:text-cyan-400 hover:border-cyan-900 transition-all"
-                >
-                  {prompt}
-                </button>
-              ))}
-            </div>
+        {/* Waiting state — vortex only, no text clutter */}
+        {!hasUserMessages && (
+          <div className="flex flex-col items-center text-center mt-24 space-y-6">
+            {!briefingDone && messages.length > 0 && (
+              <p className="text-slate-500 text-[10px] tracking-[0.3em] animate-pulse">BRIEFING EN CURSO</p>
+            )}
+            {briefingDone && (
+              <>
+                <p className="text-slate-400 text-xs max-w-xs">
+                  Briefing completado. Habla o escribe, Capitan.
+                </p>
+                <div className="flex flex-wrap justify-center gap-2 max-w-sm">
+                  {['Plan de hoy', 'Estado de negocios', 'Necesito leads', 'Analiza mi semana'].map((prompt) => (
+                    <button
+                      key={prompt}
+                      onClick={() => sendWithLog(prompt, 'text')}
+                      className="glass rounded-full px-4 py-2 text-[11px] text-slate-400 hover:text-cyan-400 transition-all"
+                    >
+                      {prompt}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         )}
 
-        {showChat && (
-          <div className="flex-1 w-full max-w-2xl overflow-y-auto px-4 pt-24 pb-4 space-y-3">
-            {messages.map((message) => (
+        {/* Chat messages — only user-initiated conversations */}
+        {hasUserMessages && (
+          <div className="flex-1 w-full max-w-2xl overflow-y-auto px-4 pt-20 pb-4 space-y-3">
+            {visibleMessages.map((message) => (
               <div
                 key={message.id}
                 className={`msg-enter flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
@@ -395,7 +374,7 @@ export default function SunshineOS() {
               </div>
             ))}
 
-            {isStreaming && (
+            {isStreaming && messages.length > 2 && (
               <div className="msg-enter flex justify-start">
                 <div className="glass rounded-2xl px-4 py-3">
                   <span className="text-[9px] text-amber-500/70 font-medium tracking-[0.2em] block mb-1">SUNSHINE</span>
@@ -410,20 +389,18 @@ export default function SunshineOS() {
       </div>
 
       {/* Bottom controls */}
-      <footer className="relative z-10 pb-8 pt-4 px-4">
+      <footer className="relative z-10 pb-6 pt-3 px-4">
         {isListening && (
-          <div className="text-center mb-3">
-            <span className="glass rounded-full px-4 py-2 text-xs text-slate-400 inline-block max-w-sm truncate">
+          <div className="text-center mb-2">
+            <span className="glass rounded-full px-4 py-1.5 text-xs text-slate-400 inline-block max-w-sm truncate">
               {input || 'Escuchando...'}
             </span>
           </div>
         )}
 
         {imagePreview && (
-          <div className="text-center mb-3">
-            <span className="glass rounded-full px-3 py-1 text-[10px] text-cyan-400 inline-block">
-              Imagen adjunta
-            </span>
+          <div className="text-center mb-2">
+            <span className="glass rounded-full px-3 py-1 text-[10px] text-cyan-400 inline-block">Imagen adjunta</span>
           </div>
         )}
 
@@ -431,13 +408,13 @@ export default function SunshineOS() {
           {/* Mic */}
           <button
             onClick={toggleListening}
-            className={`w-14 h-14 rounded-full flex items-center justify-center transition-all shrink-0 ${
+            className={`w-12 h-12 rounded-full flex items-center justify-center transition-all shrink-0 ${
               isListening
                 ? 'bg-red-500/20 border-2 border-red-500 text-red-400 rec-pulse'
                 : 'glass text-slate-400 hover:text-cyan-400 border border-white/5'
             }`}
           >
-            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               {isListening ? (
                 <rect x="6" y="6" width="12" height="12" rx="2" />
               ) : (
@@ -452,20 +429,20 @@ export default function SunshineOS() {
 
           {/* Camera */}
           <ImageUpload
-            onImageSelected={handleImageSelected}
-            onClear={handleImageClear}
+            onImageSelected={(b64, mime) => { setImageData({ base64: b64, mimeType: mime }); setImagePreview(`data:${mime};base64,${b64}`); haptic('light'); }}
+            onClear={() => { setImageData(null); setImagePreview(undefined); }}
             hasImage={!!imageData}
             previewSrc={imagePreview}
           />
 
-          {/* Text input */}
+          {/* Input */}
           <form onSubmit={handleSubmit} className="flex-1 flex">
-            <div className="glass rounded-full flex items-center w-full px-4 py-3">
+            <div className="glass rounded-full flex items-center w-full px-4 py-2.5">
               <input
                 ref={inputRef}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                placeholder={isListening ? 'Escuchando...' : imageData ? 'Describe la imagen...' : 'Escribe algo...'}
+                placeholder={isListening ? 'Escuchando...' : imageData ? 'Describe la imagen...' : 'Habla o escribe...'}
                 className="flex-1 bg-transparent text-sm text-slate-200 placeholder-slate-600 focus:outline-none"
                 disabled={isListening}
               />
@@ -486,9 +463,9 @@ export default function SunshineOS() {
           {isSpeaking && (
             <button
               onClick={() => { speechRef.current?.stop(); setIsSpeaking(false); }}
-              className="w-14 h-14 rounded-full glass flex items-center justify-center text-amber-400 animate-pulse border border-white/5 shrink-0"
+              className="w-12 h-12 rounded-full glass flex items-center justify-center text-amber-400 animate-pulse border border-white/5 shrink-0"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
                 <line x1="23" x2="17" y1="9" y2="15" />
                 <line x1="17" x2="23" y1="9" y2="15" />

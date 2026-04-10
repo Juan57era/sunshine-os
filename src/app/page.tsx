@@ -6,6 +6,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import Vortex from '@/components/Vortex';
 import { addVoiceEntry, getVoiceLog, getRecentVoiceContext, type VoiceEntry } from '@/lib/voice-log';
 import { createSpeechController, detectLanguage } from '@/lib/speech';
+import { getBaseUrl, getConnectionStatus } from '@/lib/smart-router';
 import PinLock from '@/components/PinLock';
 
 type SunshineState = 'idle' | 'listening' | 'thinking' | 'speaking';
@@ -19,11 +20,21 @@ export default function SunshineOS() {
   const [showChat, setShowChat] = useState(false);
   const [showLog, setShowLog] = useState(false);
   const [voiceLogEntries, setVoiceLogEntries] = useState<VoiceEntry[]>([]);
+  const [connection, setConnection] = useState<'local' | 'tunnel' | 'cloud'>('cloud');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const transcriptRef = useRef('');
+  const baseUrlRef = useRef('');
+
+  // Smart routing: detect best connection on mount
+  useEffect(() => {
+    getBaseUrl().then(url => {
+      baseUrlRef.current = url;
+      setConnection(getConnectionStatus());
+    });
+  }, []);
 
   const { messages, sendMessage: rawSendMessage, status } = useChat({
     transport: new DefaultChatTransport({
@@ -210,6 +221,13 @@ export default function SunshineOS() {
       <header className="relative z-10 flex items-center justify-between px-5 py-3">
         <div className="flex items-center gap-3">
           <span className="text-lg font-bold sunshine-gradient tracking-[0.2em]">SUNSHINE</span>
+          <span className={`text-[8px] tracking-wider px-2 py-0.5 rounded-full glass ${
+            connection === 'local' ? 'text-emerald-400' :
+            connection === 'tunnel' ? 'text-cyan-400' :
+            'text-amber-400'
+          }`}>
+            {connection === 'local' ? 'LOCAL' : connection === 'tunnel' ? 'DIRECT' : 'CLOUD'}
+          </span>
         </div>
         <div className="flex items-center gap-3">
           <button

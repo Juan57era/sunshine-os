@@ -6,10 +6,12 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import Vortex from '@/components/Vortex';
 import { addVoiceEntry, getVoiceLog, getRecentVoiceContext, type VoiceEntry } from '@/lib/voice-log';
 import { createSpeechController, detectLanguage } from '@/lib/speech';
+import PinLock from '@/components/PinLock';
 
 type SunshineState = 'idle' | 'listening' | 'thinking' | 'speaking';
 
 export default function SunshineOS() {
+  const [authed, setAuthed] = useState(false);
   const [input, setInput] = useState('');
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -188,6 +190,10 @@ export default function SunshineOS() {
       default: return 'text-emerald-400';
     }
   };
+
+  if (!authed) {
+    return <PinLock onUnlock={() => setAuthed(true)} />;
+  }
 
   return (
     <div className="h-screen w-screen flex flex-col relative grid-bg overflow-hidden">

@@ -1,0 +1,87 @@
+@import "tailwindcss";
+
+:root {
+  --sun-gold: #f59e0b;
+  --sun-orange: #f97316;
+  --sun-pink: #ec4899;
+  --bg-dark: #030810;
+  --bg-card: #0a1020;
+  --border-glow: #1e293b;
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --accent-cyan: #00d4ff;
+}
+
+@theme inline {
+  --color-background: var(--bg-dark);
+  --color-foreground: var(--text-primary);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #1e293b transparent;
+}
+
+body {
+  background: var(--bg-dark);
+  color: var(--text-primary);
+  font-family: var(--font-mono), monospace;
+}
+
+/* Scanline overlay */
+.scanline::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 212, 255, 0.015) 2px,
+    rgba(0, 212, 255, 0.015) 4px
+  );
+  pointer-events: none;
+  z-index: 50;
+}
+
+/* Glow pulse for recording */
+@keyframes glow-pulse {
+  0%, 100% { box-shadow: 0 0 8px rgba(239, 68, 68, 0.4); }
+  50% { box-shadow: 0 0 20px rgba(239, 68, 68, 0.8); }
+}
+
+.recording-glow {
+  animation: glow-pulse 1.5s ease-in-out infinite;
+}
+
+/* Message animation */
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.msg-enter {
+  animation: slide-up 0.2s ease-out;
+}
+
+/* Typing indicator */
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+.cursor-blink::after {
+  content: '█';
+  animation: blink 1s step-end infinite;
+  color: var(--accent-cyan);
+}
+
+/* Gradient text for SUNSHINE brand */
+.sunshine-gradient {
+  background: linear-gradient(135deg, var(--sun-gold), var(--sun-orange), var(--sun-pink));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}

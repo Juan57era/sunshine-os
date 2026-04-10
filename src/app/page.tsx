@@ -5,6 +5,7 @@ import { DefaultChatTransport } from 'ai';
 import { useState, useRef, useEffect, useCallback } from 'react';
 import Vortex from '@/components/Vortex';
 import { addVoiceEntry, getVoiceLog, getRecentVoiceContext, type VoiceEntry } from '@/lib/voice-log';
+import { createSpeechController, detectLanguage } from '@/lib/speech';
 
 type SunshineState = 'idle' | 'listening' | 'thinking' | 'speaking';
 
@@ -61,18 +62,19 @@ export default function SunshineOS() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Speak assistant response
+  // Speech controller
+  const speechRef = useRef<ReturnType<typeof createSpeechController> | null>(null);
+  useEffect(() => {
+    speechRef.current = createSpeechController();
+  }, []);
+
   const speak = useCallback((text: string) => {
-    if (!voiceEnabled || !window.speechSynthesis) return;
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = 'es-PR';
-    utterance.rate = 1.05;
-    utterance.pitch = 1.1;
-    utterance.onstart = () => setIsSpeaking(true);
-    utterance.onend = () => setIsSpeaking(false);
-    utterance.onerror = () => setIsSpeaking(false);
-    window.speechSynthesis.speak(utterance);
+    if (!voiceEnabled || !speechRef.current) return;
+    speechRef.current.speak(
+      text,
+      () => setIsSpeaking(true),
+      () => setIsSpeaking(false),
+    );
   }, [voiceEnabled]);
 
   // Auto-speak new responses
@@ -112,7 +114,8 @@ export default function SunshineOS() {
     }
 
     const recognition = new SpeechRecognition();
-    recognition.lang = 'es-PR';
+    // Auto-detect: default to Spanish, browser handles mixed language
+    recognition.lang = '';  // empty = browser default (auto-detect)
     recognition.interimResults = true;
     recognition.continuous = true;
 
@@ -203,7 +206,7 @@ export default function SunshineOS() {
         <div className="flex items-center gap-3">
           <button
             onClick={() => {
-              window.speechSynthesis.cancel();
+              speechRef.current?.stop();
               setIsSpeaking(false);
               setVoiceEnabled(!voiceEnabled);
             }}
@@ -409,7 +412,7 @@ export default function SunshineOS() {
           {/* Stop speaking */}
           {isSpeaking && (
             <button
-              onClick={() => { window.speechSynthesis.cancel(); setIsSpeaking(false); }}
+              onClick={() => { speechRef.current?.stop(); setIsSpeaking(false); }}
               className="w-14 h-14 rounded-full glass flex items-center justify-center text-amber-400 animate-pulse border border-white/5"
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

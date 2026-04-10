@@ -2,41 +2,60 @@
 
 import { useChat } from '@ai-sdk/react';
 import { useState, useRef, useEffect, useCallback } from 'react';
+import Vortex from '@/components/Vortex';
+
+type SunshineState = 'idle' | 'listening' | 'thinking' | 'speaking';
 
 export default function SunshineOS() {
   const [input, setInput] = useState('');
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [voiceEnabled, setVoiceEnabled] = useState(true);
+  const [showChat, setShowChat] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const transcriptRef = useRef('');
 
   const { messages, sendMessage, status } = useChat();
-
   const isStreaming = status === 'streaming';
 
-  // Auto-scroll to bottom
+  // Derive SUNSHINE state
+  const sunshineState: SunshineState = isListening
+    ? 'listening'
+    : isStreaming
+      ? 'thinking'
+      : isSpeaking
+        ? 'speaking'
+        : 'idle';
+
+  // Show chat when first message arrives
+  useEffect(() => {
+    if (messages.length > 0 && !showChat) setShowChat(true);
+  }, [messages, showChat]);
+
+  // Auto-scroll
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Speak the latest assistant message
+  // Speak assistant response
   const speak = useCallback((text: string) => {
     if (!voiceEnabled || !window.speechSynthesis) return;
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = 'es-PR';
-    utterance.rate = 1.1;
-    utterance.pitch = 0.9;
+    utterance.rate = 1.05;
+    utterance.pitch = 1.1;
     utterance.onstart = () => setIsSpeaking(true);
     utterance.onend = () => setIsSpeaking(false);
     utterance.onerror = () => setIsSpeaking(false);
     window.speechSynthesis.speak(utterance);
   }, [voiceEnabled]);
 
-  // Auto-speak new assistant messages when streaming finishes
-  const lastMsgRef = useRef<string>('');
+  // Auto-speak new responses
+  const lastMsgRef = useRef('');
   useEffect(() => {
     if (isStreaming || messages.length === 0) return;
     const last = messages[messages.length - 1];
@@ -51,10 +70,16 @@ export default function SunshineOS() {
     }
   }, [messages, isStreaming, speak]);
 
-  // Voice input (speech-to-text)
+  // Voice input with 10-second silence buffer
   const toggleListening = useCallback(() => {
     if (isListening) {
       recognitionRef.current?.stop();
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+      // Send whatever we have
+      if (transcriptRef.current.trim()) {
+        sendMessage({ text: transcriptRef.current.trim() });
+        transcriptRef.current = '';
+      }
       setIsListening(false);
       return;
     }
@@ -67,19 +92,41 @@ export default function SunshineOS() {
 
     const recognition = new SpeechRecognition();
     recognition.lang = 'es-PR';
-    recognition.interimResults = false;
-    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.continuous = true;
+
+    transcriptRef.current = '';
 
     recognition.onresult = (event: SpeechRecognitionEvent) => {
-      const transcript = event.results[0][0].transcript;
-      setInput(transcript);
-      sendMessage({ text: transcript });
-      setInput('');
+      let fullTranscript = '';
+      for (let i = 0; i < event.results.length; i++) {
+        fullTranscript += event.results[i][0].transcript;
+      }
+      transcriptRef.current = fullTranscript;
+      setInput(fullTranscript);
+
+      // Reset 10-second silence timer
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = setTimeout(() => {
+        recognition.stop();
+        if (transcriptRef.current.trim()) {
+          sendMessage({ text: transcriptRef.current.trim() });
+          transcriptRef.current = '';
+          setInput('');
+        }
+        setIsListening(false);
+      }, 10000);
+    };
+
+    recognition.onerror = () => {
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
       setIsListening(false);
     };
 
-    recognition.onerror = () => setIsListening(false);
-    recognition.onend = () => setIsListening(false);
+    recognition.onend = () => {
+      // If still listening (continuous mode ended unexpectedly), don't clear
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+    };
 
     recognitionRef.current = recognition;
     recognition.start();
@@ -88,7 +135,7 @@ export default function SunshineOS() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim()) return;
+    if (!input.trim() || isStreaming) return;
     sendMessage({ text: input });
     setInput('');
   };
@@ -100,59 +147,78 @@ export default function SunshineOS() {
     return 'Buenas noches';
   };
 
+  const getStatusLabel = () => {
+    switch (sunshineState) {
+      case 'listening': return 'ESCUCHANDO';
+      case 'thinking': return 'PROCESANDO';
+      case 'speaking': return 'HABLANDO';
+      default: return 'LISTA';
+    }
+  };
+
+  const getStatusColor = () => {
+    switch (sunshineState) {
+      case 'listening': return 'text-red-400';
+      case 'thinking': return 'text-cyan-400';
+      case 'speaking': return 'text-amber-400';
+      default: return 'text-emerald-400';
+    }
+  };
+
   return (
-    <div className="flex flex-col h-screen scanline">
-      {/* Header */}
-      <header className="flex items-center justify-between px-4 py-3 border-b border-slate-800 bg-[#050d18]">
-        <div className="flex items-center gap-3">
-          <h1 className="text-xl font-bold sunshine-gradient tracking-wider">
-            SUNSHINE OS
-          </h1>
-          <span className="text-xs text-slate-500 hidden sm:inline">
-            {getGreeting()}, Operador
-          </span>
+    <div className="h-screen w-screen flex flex-col relative grid-bg overflow-hidden">
+      {/* Vortex background — always visible */}
+      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+        <div className={`transition-all duration-1000 ${showChat ? 'w-[200px] h-[200px] -translate-y-[35vh]' : 'w-[320px] h-[320px] sm:w-[400px] sm:h-[400px]'}`}>
+          <Vortex state={sunshineState} />
         </div>
-        <div className="flex items-center gap-2">
+      </div>
+
+      {/* Top bar */}
+      <header className="relative z-10 flex items-center justify-between px-5 py-3">
+        <div className="flex items-center gap-3">
+          <span className="text-lg font-bold sunshine-gradient tracking-[0.2em]">SUNSHINE</span>
+        </div>
+        <div className="flex items-center gap-3">
           <button
             onClick={() => {
               window.speechSynthesis.cancel();
               setIsSpeaking(false);
               setVoiceEnabled(!voiceEnabled);
             }}
-            className={`px-2 py-1 text-xs rounded border transition-colors ${
-              voiceEnabled
-                ? 'border-cyan-800 text-cyan-400 bg-cyan-950/30'
-                : 'border-slate-700 text-slate-500 bg-transparent'
+            className={`glass rounded-full px-3 py-1 text-[10px] tracking-widest transition-all ${
+              voiceEnabled ? 'text-cyan-400' : 'text-slate-600'
             }`}
           >
-            {voiceEnabled ? '[VOZ ON]' : '[VOZ OFF]'}
+            {voiceEnabled ? 'VOZ' : 'MUTE'}
           </button>
-          <div className={`w-2 h-2 rounded-full ${isStreaming ? 'bg-amber-400 animate-pulse' : 'bg-emerald-500'}`} />
+          <span className={`text-[10px] tracking-widest font-medium status-glow ${getStatusColor()}`}>
+            {getStatusLabel()}
+          </span>
         </div>
       </header>
 
-      {/* Messages */}
-      <main className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
-        {messages.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-full text-center space-y-4 opacity-60">
-            <div className="text-4xl sunshine-gradient font-bold">SUNSHINE</div>
-            <p className="text-slate-400 text-sm max-w-md">
-              Operador diario. Estratega de crecimiento. Closer de ventas.<br />
-              Meta: $30K/mes. Sin excusas.
+      {/* Center content */}
+      <div className="flex-1 flex flex-col items-center justify-center relative z-10">
+        {/* Greeting — only when no messages */}
+        {!showChat && (
+          <div className="flex flex-col items-center text-center mt-20 space-y-3">
+            <p className="text-slate-500 text-xs tracking-[0.3em] uppercase">{getGreeting()}</p>
+            <p className="text-slate-400 text-sm max-w-xs">
+              Soy SUNSHINE, tu operadora de inteligencia.<br />
+              Habla o escribe.
             </p>
-            <div className="flex flex-wrap justify-center gap-2 mt-4">
+            <div className="flex flex-wrap justify-center gap-2 mt-6 max-w-sm">
               {[
-                'Dame el plan de hoy',
-                'Necesito mas leads para PR Pro',
-                'Script de venta para chatbot AI',
-                'Analiza mi pricing actual',
+                'Plan de hoy',
+                'Estado de negocios',
+                'Necesito leads',
+                'Analiza mi semana',
               ].map((prompt) => (
                 <button
                   key={prompt}
-                  onClick={() => {
-                    sendMessage({ text: prompt });
-                  }}
-                  className="px-3 py-2 text-xs border border-slate-700 rounded text-slate-400 hover:border-cyan-700 hover:text-cyan-400 transition-colors"
+                  onClick={() => sendMessage({ text: prompt })}
+                  className="glass rounded-full px-4 py-2 text-[11px] text-slate-400 hover:text-cyan-400 hover:border-cyan-900 transition-all"
                 >
                   {prompt}
                 </button>
@@ -161,63 +227,76 @@ export default function SunshineOS() {
           </div>
         )}
 
-        {messages.map((message) => (
-          <div
-            key={message.id}
-            className={`msg-enter flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
-          >
-            <div
-              className={`max-w-[85%] sm:max-w-[70%] rounded-lg px-4 py-3 text-sm leading-relaxed ${
-                message.role === 'user'
-                  ? 'bg-slate-800 text-slate-200 border border-slate-700'
-                  : 'bg-[#0a1628] text-slate-200 border border-slate-800'
-              }`}
-            >
-              {message.role === 'assistant' && (
-                <div className="text-[10px] text-amber-500 font-bold mb-1 tracking-widest">
-                  SUNSHINE
+        {/* Chat messages */}
+        {showChat && (
+          <div className="flex-1 w-full max-w-2xl overflow-y-auto px-4 pt-24 pb-4 space-y-3">
+            {messages.map((message) => (
+              <div
+                key={message.id}
+                className={`msg-enter flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
+              >
+                <div
+                  className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
+                    message.role === 'user'
+                      ? 'glass-strong text-slate-200'
+                      : 'glass text-slate-200'
+                  }`}
+                >
+                  {message.role === 'assistant' && (
+                    <span className="text-[9px] text-amber-500/70 font-medium tracking-[0.2em] block mb-1">
+                      SUNSHINE
+                    </span>
+                  )}
+                  {message.parts.map((part, i) => {
+                    if (part.type === 'text') {
+                      return (
+                        <span key={`${message.id}-${i}`} className="whitespace-pre-wrap">
+                          {part.text}
+                        </span>
+                      );
+                    }
+                    return null;
+                  })}
                 </div>
-              )}
-              {message.parts.map((part, i) => {
-                if (part.type === 'text') {
-                  return (
-                    <div key={`${message.id}-${i}`} className="whitespace-pre-wrap">
-                      {part.text}
-                    </div>
-                  );
-                }
-                return null;
-              })}
-            </div>
-          </div>
-        ))}
+              </div>
+            ))}
 
-        {isStreaming && (
-          <div className="flex justify-start">
-            <div className="bg-[#0a1628] border border-slate-800 rounded-lg px-4 py-3 text-sm">
-              <div className="text-[10px] text-amber-500 font-bold mb-1 tracking-widest">SUNSHINE</div>
-              <span className="cursor-blink text-slate-400" />
-            </div>
+            {isStreaming && (
+              <div className="msg-enter flex justify-start">
+                <div className="glass rounded-2xl px-4 py-3">
+                  <span className="text-[9px] text-amber-500/70 font-medium tracking-[0.2em] block mb-1">SUNSHINE</span>
+                  <span className="text-cyan-400 text-sm animate-pulse">...</span>
+                </div>
+              </div>
+            )}
+
+            <div ref={messagesEndRef} />
+          </div>
+        )}
+      </div>
+
+      {/* Bottom controls */}
+      <footer className="relative z-10 pb-8 pt-4 px-4">
+        {/* Voice transcript preview */}
+        {isListening && transcriptRef.current && (
+          <div className="text-center mb-3">
+            <span className="glass rounded-full px-4 py-2 text-xs text-slate-400 inline-block max-w-sm truncate">
+              {input || '...'}
+            </span>
           </div>
         )}
 
-        <div ref={messagesEndRef} />
-      </main>
-
-      {/* Input */}
-      <footer className="border-t border-slate-800 bg-[#050d18] p-4">
-        <form onSubmit={handleSubmit} className="flex items-center gap-2 max-w-3xl mx-auto">
+        <div className="flex items-center justify-center gap-3 max-w-lg mx-auto">
+          {/* Mic button */}
           <button
-            type="button"
             onClick={toggleListening}
-            className={`p-3 rounded-lg border transition-all shrink-0 ${
+            className={`w-14 h-14 rounded-full flex items-center justify-center transition-all ${
               isListening
-                ? 'bg-red-950/50 border-red-700 text-red-400 recording-glow'
-                : 'border-slate-700 text-slate-400 hover:border-cyan-700 hover:text-cyan-400'
+                ? 'bg-red-500/20 border-2 border-red-500 text-red-400 rec-pulse'
+                : 'glass text-slate-400 hover:text-cyan-400 border border-white/5'
             }`}
-            title={isListening ? 'Detener' : 'Hablar'}
           >
-            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               {isListening ? (
                 <rect x="6" y="6" width="12" height="12" rx="2" />
               ) : (
@@ -230,49 +309,43 @@ export default function SunshineOS() {
             </svg>
           </button>
 
-          <input
-            ref={inputRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder={isListening ? 'Escuchando...' : 'Escribe o habla...'}
-            className="flex-1 bg-[#0a1020] border border-slate-700 rounded-lg px-4 py-3 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-cyan-700 transition-colors"
-            disabled={isListening}
-          />
+          {/* Text input */}
+          <form onSubmit={handleSubmit} className="flex-1 flex">
+            <div className="glass rounded-full flex items-center w-full px-4 py-3">
+              <input
+                ref={inputRef}
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder={isListening ? 'Escuchando...' : 'Escribe algo...'}
+                className="flex-1 bg-transparent text-sm text-slate-200 placeholder-slate-600 focus:outline-none"
+                disabled={isListening}
+              />
+              <button
+                type="submit"
+                disabled={!input.trim() || isStreaming}
+                className="ml-2 text-slate-500 hover:text-amber-400 disabled:opacity-20 transition-colors"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="m5 12 7-7 7 7" />
+                  <path d="M12 19V5" />
+                </svg>
+              </button>
+            </div>
+          </form>
 
-          <button
-            type="submit"
-            disabled={!input.trim() || isStreaming}
-            className="p-3 rounded-lg border border-slate-700 text-slate-400 hover:border-amber-600 hover:text-amber-400 transition-all disabled:opacity-30 disabled:cursor-not-allowed shrink-0"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="m5 12 7-7 7 7" />
-              <path d="M12 19V5" />
-            </svg>
-          </button>
-
+          {/* Stop speaking */}
           {isSpeaking && (
             <button
-              type="button"
-              onClick={() => {
-                window.speechSynthesis.cancel();
-                setIsSpeaking(false);
-              }}
-              className="p-3 rounded-lg border border-amber-700 text-amber-400 animate-pulse shrink-0"
-              title="Detener voz"
+              onClick={() => { window.speechSynthesis.cancel(); setIsSpeaking(false); }}
+              className="w-14 h-14 rounded-full glass flex items-center justify-center text-amber-400 animate-pulse border border-white/5"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
                 <line x1="23" x2="17" y1="9" y2="15" />
                 <line x1="17" x2="23" y1="9" y2="15" />
               </svg>
             </button>
           )}
-        </form>
-
-        <div className="text-center mt-2">
-          <span className="text-[10px] text-slate-600 tracking-wider">
-            SUNSHINE OS v1.0 — META: $30K/MES
-          </span>
         </div>
       </footer>
     </div>
